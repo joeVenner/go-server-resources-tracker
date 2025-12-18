@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+/*
+=====================================================
+Configuration (from environment variables)
+=====================================================
+*/
+
 var (
 	token  = os.Getenv("TELEGRAM_TOKEN")
 	chatID = os.Getenv("TELEGRAM_CHAT_ID")
@@ -25,19 +31,18 @@ var (
 	lastAlert time.Time
 )
 
+/*
+=====================================================
+Helpers
+=====================================================
+*/
+
 func getEnvFloat(key string, def float64) float64 {
 	v, err := strconv.ParseFloat(os.Getenv(key), 64)
 	if err != nil {
 		return def
 	}
 	return v
-}
-
-func debugNamespace() {
-	send("🧪 Debug\n" +
-		"Hostname: `" + run("hostname") + "`\n" +
-		"Total RAM: `" + run("free -h | grep Mem") + "`\n" +
-		"CPU info: `" + run("nproc") + " cores`")
 }
 
 func getEnvInt(key string, def int) int {
@@ -55,12 +60,26 @@ func run(cmd string) string {
 
 func send(msg string) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	body := fmt.Sprintf(`{"chat_id":"%s","text":"%s","parse_mode":"Markdown"}`, chatID, msg)
+	body := fmt.Sprintf(
+		`{"chat_id":"%s","text":"%s","parse_mode":"Markdown"}`,
+		chatID,
+		msg,
+	)
 
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	http.DefaultClient.Do(req)
 }
+
+func nowUTC() string {
+	return time.Now().UTC().Format("2006-01-02 15:04 UTC")
+}
+
+/*
+=====================================================
+System metrics
+=====================================================
+*/
 
 func cpuUsage() float64 {
 	out := run(`top -bn1 | awk '/Cpu/ {print 100 - $8}'`)
@@ -74,6 +93,10 @@ func ramUsage() float64 {
 	return v
 }
 
+func ramHuman() string {
+	return run(`free -h | awk '/Mem:/ {print $3 " / " $2}'`)
+}
+
 func diskUsage() float64 {
 	out := run(`df / | tail -1 | awk '{print $5}' | tr -d '%'`)
 	v, _ := strconv.ParseFloat(out, 64)
@@ -84,82 +107,133 @@ func topProcs() string {
 	return run(`ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -6`)
 }
 
+/*
+=====================================================
+Alert logic
+=====================================================
+*/
+
 func shouldAlert() bool {
 	return time.Since(lastAlert) > alertCooldown
 }
 
-func check() {
+func sendResourceAlert(cpu, ram, disk float64) {
+	host := run("hostname")
+
+	body := fmt.Sprintf(
+		"🖥 *Host:* `%s`\n"+
+			"⏰ *Time:* %s\n\n"+
+			"⚠️ *Thresholds exceeded:*\n"+
+			"• CPU Usage: %.1f%%\n"+
+			"• RAM Usage: %.1f%%\n"+
+			"• Disk Usage: %.1f%%\n\n"+
+			"🔥 *Top Processes:*\n```%s```",
+		host,
+		nowUTC(),
+		cpu,
+		ram,
+		disk,
+		topProcs(),
+	)
+
+	send("🚨 *Server Resource Alert*\n\n" + body)
+}
+
+func checkResources() {
 	cpu := cpuUsage()
 	ram := ramUsage()
 	disk := diskUsage()
 
-	var alerts []string
+	triggered := false
 
-	if cpu >= cpuLimit {
-		alerts = append(alerts, fmt.Sprintf("🔥 CPU %.1f%%", cpu))
-	}
-	if ram >= ramLimit {
-		alerts = append(alerts, fmt.Sprintf("🔥 RAM %.1f%%", ram))
-	}
-	if disk >= diskLimit {
-		alerts = append(alerts, fmt.Sprintf("🔥 Disk %.1f%%", disk))
+	if cpu >= cpuLimit || ram >= ramLimit || disk >= diskLimit {
+		triggered = true
 	}
 
-	if len(alerts) > 0 && shouldAlert() {
+	if triggered && shouldAlert() {
 		lastAlert = time.Now()
-		host, _ := os.Hostname()
-
-		send(fmt.Sprintf(
-			"🚨 *Resource Alert*\nHost: `%s`\n\n%s\n\n*Top processes:*\n```%s```",
-			host,
-			strings.Join(alerts, "\n"),
-			topProcs(),
-		))
+		sendResourceAlert(cpu, ram, disk)
 	}
 }
+
+/*
+=====================================================
+Daily summary
+=====================================================
+*/
 
 func dailySummary() {
-	host, _ := os.Hostname()
+	host := run("hostname")
 	uptime := run("uptime -p")
-	disk := run("df -h / | tail -1")
+	cores := run("nproc")
 
-	send(fmt.Sprintf(
-		"📊 *Daily Summary*\n\n"+
-			"*Host:* `%s`\n"+
-			"*Uptime:* %s\n"+
-			"*CPU:* %.1f%%\n"+
-			"*RAM:* %.1f%%\n"+
-			"*Disk:* `%s`\n\n"+
-			"*Top processes:*\n```%s```",
+	body := fmt.Sprintf(
+		"🖥 *Host:* `%s`\n"+
+			"⏰ *Time:* %s\n"+
+			"⏱ *Uptime:* %s\n"+
+			"🧠 *CPU Cores:* %s\n\n"+
+			"📈 *Current Usage:*\n"+
+			"• CPU: %.1f%%\n"+
+			"• RAM: %s\n"+
+			"• Disk: %.1f%%\n\n"+
+			"🔥 *Top Processes:*\n```%s```",
 		host,
+		nowUTC(),
 		uptime,
+		cores,
 		cpuUsage(),
-		ramUsage(),
-		disk,
+		ramHuman(),
+		diskUsage(),
 		topProcs(),
-	))
+	)
+
+	send("📊 *Daily Server Summary*\n\n" + body)
 }
+
+/*
+=====================================================
+Debug (can be removed later)
+=====================================================
+*/
+
+func debugNamespace() {
+	send(
+		"🧪 *Debug Information*\n\n" +
+			"Hostname: `" + run("hostname") + "`\n" +
+			"RAM: `" + run("free -h | grep Mem") + "`\n" +
+			"CPU Cores: `" + run("nproc") + "`",
+	)
+}
+
+/*
+=====================================================
+Main
+=====================================================
+*/
 
 func main() {
 	if token == "" || chatID == "" {
-		fmt.Println("Missing Telegram env vars")
+		fmt.Println("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID")
 		os.Exit(1)
 	}
 
-	host, _ := os.Hostname()
-	send("✅ *Server monitor started*\nHost: `" + host + "`")
-	debugNamespace() 
+	host := run("hostname")
+	send("✅ *Server monitor started*\n🖥 Host: `" + host + "`")
+
+	// One-time debug (safe to remove later)
+	debugNamespace()
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		now := time.Now()
-		check()
+
+		checkResources()
 
 		if now.Hour() == summaryHour && now.Minute() == 0 {
 			dailySummary()
-			time.Sleep(61 * time.Second)
+			time.Sleep(61 * time.Second) // prevent duplicate summary
 		}
 
 		<-ticker.C
