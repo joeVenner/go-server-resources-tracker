@@ -1,6 +1,10 @@
 FROM golang:1.22-alpine AS build
+
 WORKDIR /app
-COPY main.go .
+
+COPY go.mod ./
+COPY main.go ./
+
 RUN go build -o monitor
 
 FROM alpine:latest
