@@ -33,6 +33,13 @@ func getEnvFloat(key string, def float64) float64 {
 	return v
 }
 
+func debugNamespace() {
+	send("🧪 Debug\n" +
+		"Hostname: `" + run("hostname") + "`\n" +
+		"Total RAM: `" + run("free -h | grep Mem") + "`\n" +
+		"CPU info: `" + run("nproc") + " cores`")
+}
+
 func getEnvInt(key string, def int) int {
 	v, err := strconv.Atoi(os.Getenv(key))
 	if err != nil {
@@ -141,6 +148,7 @@ func main() {
 
 	host, _ := os.Hostname()
 	send("✅ *Server monitor started*\nHost: `" + host + "`")
+	debugNamespace() 
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
